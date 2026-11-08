@@ -205,6 +205,47 @@ def float_barriers(source):
     return source
 
 
+def _table_rows(source):
+    """Recognize row breaks outside groups; decline unsupported TeX syntax."""
+    rows, depth, start, index = [], 0, 0, 0
+    while index < len(source):
+        char = source[index]
+        if char == '%':
+            newline = source.find('\n', index)
+            index = len(source) if newline < 0 else newline + 1
+            continue
+        if char == '\\':
+            command = re.match(r'\\([a-zA-Z]+|.)', source[index:])
+            if command is None:
+                return None
+            name = command.group(1)
+            if name == 'verb' or (depth == 0 and name in ('begin', 'end', 'tabularnewline')):
+                return None
+            index += len(command.group())
+            if name == '\\' and depth == 0:
+                # Row spacing and starred breaks need their own preservation
+                # rules; retain such edited tables instead of relocating them.
+                if source[index:].lstrip().startswith(('*', '[')):
+                    return None
+                row = source[start:index-2]
+                if row.strip():
+                    rows.append(row)
+                start = index
+            continue
+        if char == '{':
+            depth += 1
+        elif char == '}':
+            depth -= 1
+            if depth < 0:
+                return None
+        index += 1
+    if depth:
+        return None
+    if source[start:].strip():
+        rows.append(source[start:])
+    return rows
+
+
 def _table_parts(body, environment='tabular'):
     """Parse only the renderer's booktabs structure, preserving edited cell text."""
     start = body.find('\\begin{' + environment + '}{')
@@ -228,7 +269,7 @@ def _table_parts(body, environment='tabular'):
     data_start = body.find('\\endfoot', stop, end)
     data_start = data_start + len('\\endfoot') if data_start >= 0 else mid + len('\\midrule')
     data_end = end if environment == 'longtable' else bottom
-    rows = [row.strip() for row in body[data_start:data_end].split('\\\\') if row.strip()]
+    rows = _table_rows(body[data_start:data_end])
     if not rows:
         return None
     return {'spec': body[spec_start:stop], 'header': body[top:mid+len('\\midrule')], 'rows': rows,
