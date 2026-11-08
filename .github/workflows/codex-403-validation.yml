@@ -1,0 +1,81 @@
+name: Fork-only issue 403 validation
+on:
+  push:
+    branches: [ci/403-validation]
+permissions:
+  contents: read
+jobs:
+  regression:
+    if: github.repository == 'tstotzer/forest'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      FOREST_MODEL: ''
+      FOREST_DATABASE_URL: sqlite:////tmp/forest-403.db
+      FOREST_DATA_DIR: /tmp/forest-403-data
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Check exact source and fork-only harness scope
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD^)" = ded1ae35c217bf5d9fddac385eba18eca55de6c4
+          test "$(git diff --name-only HEAD^ HEAD)" = .github/workflows/codex-403-validation.yml
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install and preflight process isolation
+        run: |
+          set -euo pipefail
+          sudo apt-get update && sudo apt-get install -y bubblewrap
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          bwrap --unshare-all --ro-bind / / --proc /proc --dev /dev -- /bin/true
+      - name: Install project-pinned Tectonic
+        run: |
+          set -euo pipefail
+          archive=tectonic-0.17.0-x86_64-unknown-linux-gnu.tar.gz
+          curl --fail --show-error --silent --location --retry 3 \
+            "https://github.com/tectonic-typesetting/tectonic/releases/download/tectonic%400.17.0/$archive" \
+            --output "$RUNNER_TEMP/$archive"
+          echo "1a715688baf591e650c8aeb160ae934e181685eecbb38b317de30b269ac5d606  $RUNNER_TEMP/$archive" | sha256sum --check
+          mkdir -p "$RUNNER_TEMP/tectonic"
+          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP/tectonic"
+          echo "$RUNNER_TEMP/tectonic" >> "$GITHUB_PATH"
+      - run: python -m pip install -r requirements.lock.txt && python -m pip install --no-deps -e .
+      - name: Prove regression against original production code
+        run: |
+          set -euo pipefail
+          cp research/paper/layout.py "$RUNNER_TEMP/fixed-layout.py"
+          git show dbcb62a494645fc37b36fb1edfa86c50c225f043:research/paper/layout.py > research/paper/layout.py
+          set +e
+          python -m pytest tests/test_paper_table_rows.py -q > "$RUNNER_TEMP/base-regression.log" 2>&1
+          status=$?
+          set -e
+          cp "$RUNNER_TEMP/fixed-layout.py" research/paper/layout.py
+          cat "$RUNNER_TEMP/base-regression.log"
+          test "$status" = 1
+          grep -q '^FAILED .*::test_multiline_table_compiles_before_and_after_reflow' "$RUNNER_TEMP/base-regression.log"
+          grep -q 'after reflow:' "$RUNNER_TEMP/base-regression.log"
+          git diff --exit-code -- research/paper/layout.py
+      - name: Validate fix with actual compiler
+        run: python -m pytest tests/test_paper_table_rows.py tests/test_paper_layout.py -q -rs
+      - run: forest --help
+      - run: python scripts/export_api_contract.py --check
+      - name: Full backend checks
+        run: python -m pytest -q
+      - run: npm --prefix apps/web ci
+      - run: npm --prefix apps/web run build
+      - run: npm --prefix apps/web test
+      - run: python scripts/package_source.py --output /tmp/forest-403-source.zip
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: issue-403-base-regression
+          path: ${{ runner.temp }}/base-regression.log
+          if-no-files-found: ignore
