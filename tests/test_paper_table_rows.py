@@ -105,5 +105,6 @@ def test_multiline_table_compiles_before_and_after_reflow(tmp_path):
             apply_layout(tmp_path, {'columns': 'single', 'max_table_rows': 4})
         result = subprocess.run([compiler, '--keep-logs', 'paper.tex'],
                                 cwd=tmp_path, capture_output=True, text=True, timeout=120)
-        assert result.returncode == 0, result.stdout + result.stderr
+        phase = 'after reflow' if reflow else 'before reflow'
+        assert result.returncode == 0, phase + ': ' + result.stdout + result.stderr
         assert (tmp_path / 'paper.pdf').read_bytes().startswith(b'%PDF-')
